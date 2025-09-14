@@ -3,6 +3,7 @@ import json
 from typing import Dict, Any
 from datetime import datetime, timedelta
 
+
 class XBRLAPIError(Exception):
     """Custom exception for API-specific errors."""
     def __init__(self, message, status_code=None, response_data=None):
@@ -13,7 +14,9 @@ class XBRLAPIError(Exception):
 class XBRLClient:
     """A client to interact with the XBRL US API, with token management."""
 
-    def __init__(self, client_id: str, client_secret: str, base_url: str = "https://data.xbrl.us/api/v1"):
+    def __init__(self, client_id: str, client_secret: str, username: str, 
+                 password: str,  platform: str , base_url: str = "https://api.xbrl.us/api/v1",
+                 headers: dict = {"Content-Type": "application/x-www-form-urlencoded"}):
         """
         Initializes the client with authentication credentials.
 
@@ -25,6 +28,10 @@ class XBRLClient:
         self.base_url = base_url
         self.client_id = client_id
         self.client_secret = client_secret
+        self.username= username
+        self.password= password
+        self.platform= platform
+        self.headers= headers
         self.access_token = None
         self.token_expiry_time = None
         self.session = requests.Session()
@@ -32,32 +39,47 @@ class XBRLClient:
         # Request an initial token when the client is created
         self._request_new_token()
 
+        if not self.access_token:
+            raise XBRLAPIError("Failed to initialize client: Could not retrieve a valid access token.")
+    
+
     def _request_new_token(self):
         """
         Private method to request a new access token from the API.
-        This method should be updated with the correct authentication endpoint and logic.
+        
         """
-        # Placeholder for the actual API endpoint for token generation
-        token_url = "https://auth.xbrl.us/token" 
+        # XBRL API endpoint for token generation
+        token_url = "https://api.xbrl.us/oauth2/token"
+        
         
         # The body and headers for the token request will depend on XBRL's OAuth flow
         payload = {
-            "grant_type": "client_credentials",
+            "grant_type": "password",
             "client_id": self.client_id,
-            "client_secret": self.client_secret
+            "client_secret": self.client_secret,
+            'username' : self.username,
+            'password' : self.password,
+            'platform' : self.platform
+
         }
 
+        headers = self.headers
+
         try:
-            response = requests.post(token_url, data=payload)
+            response = requests.post(token_url, data=payload, headers=headers)
             response.raise_for_status()
             token_data = response.json()
-
             self.access_token = token_data.get("access_token")
             # The 'expires_in' value is usually in seconds (e.g., 3600 for 1 hour)
+
+            # Update the session header with the initial, valid token
+            self.session.headers.update({
+            "Authorization": f"Bearer {self.access_token}"
+            })
+
             expires_in_seconds = token_data.get("expires_in", 3600) 
             # Set the expiry time with a small buffer (e.g., 5 minutes)
             self.token_expiry_time = datetime.now() + timedelta(seconds=expires_in_seconds - 300)
-
             print("Access token successfully refreshed.")
         except requests.exceptions.RequestException as e:
             raise XBRLAPIError(f"Failed to retrieve new access token: {e}")
@@ -99,15 +121,25 @@ class XBRLClient:
         
         return response.json()
 
-    def query(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    def query(self, endpoint: str, params: Dict[str, Any] = None, raw_params: str = None) -> Dict[str, Any]:
         """
         Performs a GET query to a specified API endpoint, ensuring the token is valid.
         """
         self._ensure_token_is_valid()
         url = f"{self.base_url}/{endpoint}"
         
+        # Combine dictionary parameters with a manually formatted raw string
+        # This is where the magic happens. We build the full URL string manually.
+        url_with_params = requests.Request('GET', url, params=params).prepare().url
+        
+        if raw_params:
+            if '?' in url_with_params:
+                url_with_params += f"&{raw_params}"
+            else:
+                url_with_params += f"?{raw_params}"
         try:
-            response = self.session.get(url, params=params)
+            response = self.session.get(url_with_params)  #url, params=
+            #print(response.url)
             response.raise_for_status()
             return self._handle_response(response)
         except requests.exceptions.RequestException as e:
@@ -115,3 +147,11 @@ class XBRLClient:
 
     def __repr__(self) -> str:
         return f"XBRLClient(base_url='{self.base_url}')"
+    
+    def get_token(self) -> str:
+        """
+        Returns the current, valid access token.
+        Ensures the token is refreshed before returning.
+        """
+        self._ensure_token_is_valid()
+        return self.access_token
